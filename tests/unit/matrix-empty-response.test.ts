@@ -87,6 +87,35 @@ async function processQuery(fake: ReturnType<typeof fakeConnector>): Promise<voi
   await (MatrixConnector.prototype as any).processQuery.call(fake.connector, context, "summarize")
 }
 
+describe("Matrix room message validation", () => {
+  test("ignores redacted events without msgtype", async () => {
+    const event = {
+      type: "m.room.message",
+      event_id: "$redacted",
+      sender: "@user:example.org",
+      content: {},
+      unsigned: { redacted_because: { type: "m.room.redaction" } },
+    }
+
+    await expect(
+      (MatrixConnector.prototype as any).handleRoomMessage.call({}, "!room:example.org", event),
+    ).resolves.toBeUndefined()
+  })
+
+  test("ignores malformed text events without a string body", async () => {
+    const event = {
+      type: "m.room.message",
+      event_id: "$malformed",
+      sender: "@user:example.org",
+      content: { msgtype: "m.text", body: 42 },
+    }
+
+    await expect(
+      (MatrixConnector.prototype as any).handleRoomMessage.call({}, "!room:example.org", event),
+    ).resolves.toBeUndefined()
+  })
+})
+
 describe("Matrix empty ACP responses", () => {
   test("retries once with a fresh session and sends the recovered response", async () => {
     const fake = fakeConnector("", "recovered answer")
