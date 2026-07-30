@@ -32,7 +32,6 @@ import {
   LogService,
   MatrixAuth,
   MatrixClient,
-  MessageEvent,
   RichConsoleLogger,
   RustSdkCryptoStorageProvider,
   SimpleFsStorageProvider,
@@ -171,7 +170,11 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       this.log(`[CRYPTO] Failed to decrypt in ${roomId}: ${error.message}`)
     })
 
-    this.matrix.on("room.message", this.handleRoomMessage.bind(this))
+    this.matrix.on("room.message", (roomId: string, event: any) => {
+      this.handleRoomMessage(roomId, event).catch((err) => {
+        this.logError(`Failed to handle Matrix message in ${roomId}:`, err)
+      })
+    })
     await this.matrix.start()
 
     this.startSessionExpiryLoop()
@@ -355,16 +358,22 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
   // ---------------------------------------------------------------------------
 
   private async handleRoomMessage(roomId: string, event: any): Promise<void> {
-    const message = new MessageEvent(event)
+    // Redacted events have empty content, and malformed events may contain
+    // non-string fields. Reading those through MessageEvent's getters throws,
+    // so validate the raw event before doing any asynchronous work.
+    const content = event?.content
+    if (!content || typeof content !== "object") return
+    if (content.msgtype !== "m.text" || typeof content.body !== "string") return
 
-    if (message.messageType !== "m.text") return
+    const sender = event?.sender
+    if (typeof sender !== "string" || !sender) return
+
+    const body = content.body.trim()
+    if (!body) return
 
     const myUserId = await this.matrix!.getUserId()
-    if (message.sender === myUserId) return
-    if (!this.isUserAllowed(message.sender)) return
-
-    const body = message.textBody.trim()
-    if (!body) return
+    if (sender === myUserId) return
+    if (!this.isUserAllowed(sender)) return
 
     // Deduplicate events (Matrix sync replays)
     if (this.isDuplicateEvent(event.event_id || `${roomId}:${Date.now()}`)) return
@@ -373,7 +382,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
 
     const context = normalizeMatrixEventContext({
       roomId,
-      sender: message.sender,
+      sender,
       text: body,
       eventId: event.event_id,
       threadRootEventId,
@@ -407,7 +416,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     }) && this.sessionManager.has(context.sessionId)) {
       // Implicit thread follow-up
       query = body
-      this.log(`[THREAD] ${message.sender} in ${context.sessionId}: ${body}`)
+      this.log(`[THREAD] ${sender} in ${context.sessionId}: ${body}`)
     } else {
       return
     }
@@ -415,7 +424,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     query = query.replace(/^[:\s]+/, "").trim()
     if (!query) return
 
-    this.log(`[MSG] ${message.sender} in ${context.sessionId}: ${body}`)
+    this.log(`[MSG] ${sender} in ${context.sessionId}: ${body}`)
 
     await this.stopMirrorForUserActivity(context.sessionId, query, async (text) => {
       await this.sendNoticeReply(context, text)
@@ -434,12 +443,12 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       }
 
       this.log(`[CMD] Forwarding to OpenCode: ${query}`)
-      if (!this.checkRateLimit(message.sender)) return
+      if (!this.checkRateLimit(sender)) return
       await this.processQuery(context, query)
       return
     }
 
-    if (!this.checkRateLimit(message.sender)) return
+    if (!this.checkRateLimit(sender)) return
     await this.processQuery(context, query)
   }
 
