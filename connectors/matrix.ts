@@ -77,6 +77,22 @@ const STATE_STORAGE_PATH = path.join(STORAGE_PATH, "bot-state.json")
 const CRYPTO_STORAGE_PATH = path.join(STORAGE_PATH, "crypto")
 const TOKEN_FILE_PATH = path.join(STORAGE_PATH, "access_token")
 
+// Escape special regex characters so user-supplied botName values can be
+// safely interpolated into the botName: trigger pattern.
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+// Pattern matching lines that start with the configured bot name followed by
+// a colon or whitespace, e.g. "opencode: hello" or "@opencode hello".
+// Built once at startup so per-message handling stays cheap.
+const BOT_NAME_TRIGGER_RE = BOT_NAME
+  ? new RegExp(`^@?${escapeRegex(BOT_NAME)}\\s*[:\\s]`, "i")
+  : null
+const BOT_NAME_TRIGGER_STRIP_RE = BOT_NAME
+  ? new RegExp(`^@?${escapeRegex(BOT_NAME)}\\s*[:\\s]*`, "i")
+  : null
+
 // =============================================================================
 // Thread Context Helpers (imported from standalone file for testability)
 // =============================================================================
@@ -453,10 +469,12 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       query = body.slice(TRIGGER.length + 1).trim()
     } else if (body.startsWith(TRIGGER)) {
       query = body.slice(TRIGGER.length).trim()
+    } else if (BOT_NAME_TRIGGER_RE && BOT_NAME_TRIGGER_RE.test(body)) {
+      // Lines starting with the configured bot name, e.g. "opencode: hello".
+      // Accepts an optional leading "@" so "@opencode: hello" works too.
+      query = body.replace(BOT_NAME_TRIGGER_STRIP_RE!, "").trim()
     } else if (body.includes(myUserId)) {
       query = body.replace(myUserId, "").trim()
-    } else if (body.match(/^@?bot[:\s]/i)) {
-      query = body.replace(/^@?bot[:\s]*/i, "").trim()
     } else if (isDM) {
       query = body
     } else if (shouldHandleThreadReply({
