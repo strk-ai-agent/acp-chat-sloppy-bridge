@@ -166,6 +166,44 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     this.matrix = new MatrixClient(HOMESERVER, accessToken, stateStorage, cryptoStorage)
     AutojoinRoomsMixin.setupOnClient(this.matrix)
 
+    // matrix-bot-sdk's autojoin handler does `return client.joinRoom(roomId)`
+    // without awaiting the result. If the join fails (e.g. weechat-matrix-rs
+    // re-invites the bot into a room it was previously kicked from, the
+    // invite was rescinded, or the server returns M_FORBIDDEN for any other
+    // reason) the rejected promise becomes an unhandled rejection in Bun,
+    // which aborts the process and trips the Rust napi-rs tokio runtime panic
+    // during cleanup. Replace the handler with a guarded version.
+    this.matrix.removeAllListeners("room.invite")
+    this.matrix.on("room.invite", async (roomId: string, _inviteEvent: any) => {
+      try {
+        await this.matrix!.joinRoom(roomId)
+      } catch (err) {
+        this.logError(`Failed to auto-join room ${roomId}:`, err)
+      }
+    })
+
+    // Same issue for the crypto client hooks that matrix-bot-sdk installs
+    // whenever a RustSdkCryptoStorageProvider is configured. Those handlers
+    // also ignore the returned promise, so a failure inside the crypto
+    // engine (for example while bootstrapping an encrypted DM room) would
+    // surface as an unhandled rejection and tear down the bot. Wrap them.
+    const cryptoClient = (this.matrix as any).crypto
+    if (cryptoClient) {
+      this.matrix.removeAllListeners("room.join")
+      this.matrix.on("room.join", (roomId: string) => {
+        cryptoClient.onRoomJoin(roomId).catch((err: Error) => {
+          this.logError(`[CRYPTO] onRoomJoin failed for ${roomId}:`, err)
+        })
+      })
+
+      this.matrix.removeAllListeners("room.event")
+      this.matrix.on("room.event", (roomId: string, event: any) => {
+        cryptoClient.onRoomEvent(roomId, event).catch((err: Error) => {
+          this.logError(`[CRYPTO] onRoomEvent failed for ${roomId}:`, err)
+        })
+      })
+    }
+
     this.matrix.on("room.failed_decryption", async (roomId: string, event: any, error: Error) => {
       this.log(`[CRYPTO] Failed to decrypt in ${roomId}: ${error.message}`)
     })
@@ -392,9 +430,18 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     const existingSession = this.sessionManager.get(context.sessionId)
     if (existingSession) existingSession.lastActivity = new Date()
 
-    // Check if this is a DM
-    const members = await this.matrix!.getJoinedRoomMembers(roomId)
-    const isDM = members.length === 2
+    // Check if this is a DM. The homeserver may return M_FORBIDDEN for a
+    // room we haven't fully joined yet (e.g. a DM that weechat-matrix-rs
+    // just created and re-invited us into). Treat that as "not a DM"
+    // rather than letting the rejection bubble up and tear down the bot.
+    let isDM = false
+    try {
+      const members = await this.matrix!.getJoinedRoomMembers(roomId)
+      isDM = members.length === 2
+    } catch (err) {
+      this.logError(`Failed to query members of ${roomId}; assuming not a DM:`, err)
+      return
+    }
 
     // Extract query
     let query = ""
@@ -804,6 +851,22 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
 
 async function main() {
   const connector = new MatrixConnector()
+
+  // Last-resort guard against unhandled promise rejections. Even though
+  // every public connector code path awaits its work in a try/catch, the
+  // matrix-bot-sdk installs internal listeners (autojoin, crypto room
+  // events) that may themselves reject. An unhandled rejection in Bun
+  // aborts the process and the resulting jolt to the napi-rs tokio runtime
+  // is what produces the "called `Option::unwrap()` on a `None` value"
+  // panic. Logging and continuing keeps the bot alive long enough to
+  // surface the underlying error.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[MATRIX] Unhandled rejection:", reason)
+  })
+  process.on("uncaughtException", (err) => {
+    console.error("[MATRIX] Uncaught exception:", err)
+  })
+
   process.on("SIGINT", async () => { await connector.stop(); process.exit(0) })
   process.on("SIGTERM", async () => { await connector.stop(); process.exit(0) })
   await connector.start()
