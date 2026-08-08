@@ -73,24 +73,42 @@ export function ensureSessionDir(sessionDir: string): void {
 }
 
 /**
- * Copy a config file to session directory if source is newer or target doesn't exist.
+ * Copy a config file to session directory if source content differs from target.
+ * Returns true if the file was actually refreshed (added or replaced), false otherwise.
+ *
+ * Using a content hash instead of mtime avoids two pitfalls:
+ *   - `git checkout` / restores can produce a source file whose mtime is older
+ *     than the cached snapshot, even though the content actually changed.
+ *   - edits that preserve mtime would otherwise leave stale config in place.
  */
-function copyIfNewer(sourceDir: string, sessionDir: string, fileName: string): void {
+function copyIfChanged(sourceDir: string, sessionDir: string, fileName: string): boolean {
   const sourcePath = path.join(sourceDir, fileName)
   const targetPath = path.join(sessionDir, fileName)
-  
-  if (fs.existsSync(sourcePath)) {
+
+  if (!fs.existsSync(sourcePath)) return false
+
+  const sourceHash = hashFile(sourcePath)
+  const targetHash = fs.existsSync(targetPath) ? hashFile(targetPath) : null
+
+  if (sourceHash && sourceHash !== targetHash) {
     try {
-      const sourceStats = fs.statSync(sourcePath)
-      const targetExists = fs.existsSync(targetPath)
-      
-      if (!targetExists || sourceStats.mtime > fs.statSync(targetPath).mtime) {
-        fs.copyFileSync(sourcePath, targetPath)
-        console.log(`  Copied ${fileName} to session directory`)
-      }
+      fs.copyFileSync(sourcePath, targetPath)
+      console.log(`  Refreshed ${fileName} in session directory (content changed)`)
+      return true
     } catch (err) {
       console.error(`Failed to copy ${fileName}:`, err)
+      return false
     }
+  }
+  return false
+}
+
+function hashFile(filePath: string): string | null {
+  try {
+    const buf = fs.readFileSync(filePath)
+    return createHash("sha256").update(buf).digest("hex")
+  } catch {
+    return null
   }
 }
 
@@ -124,24 +142,52 @@ function symlinkDir(sourceDir: string, sessionDir: string, dirName: string): voi
 
 /**
  * Copy config files to session directory.
- * 
+ *
  * OpenCode looks for config in the working directory (cwd).
  * Since sessions run from ~/.cache/..., we copy these files there:
  * - opencode.json: Agent config with tool permissions
  * - AGENTS.md: Instructions that override global AGENTS.md
  * - .opencode/skills/: Symlinked for skill discovery
- * 
+ *
+ * Copies are content-based, not mtime-based, so restores and
+ * timestamp-preserving edits are still picked up.
+ *
  * @param sessionDir - Target session directory
  * @param projectDir - Source project directory (default: process.cwd())
+ * @returns true if any file was actually refreshed, false otherwise.
  */
-export function copyOpenCodeConfig(sessionDir: string, projectDir?: string): void {
+export function copyOpenCodeConfig(sessionDir: string, projectDir?: string): boolean {
   const sourceDir = projectDir || process.cwd()
-  
-  copyIfNewer(sourceDir, sessionDir, "opencode.json")
-  copyIfNewer(sourceDir, sessionDir, "AGENTS.md")
-  
+
+  let refreshed = false
+  refreshed = copyIfChanged(sourceDir, sessionDir, "opencode.json") || refreshed
+  refreshed = copyIfChanged(sourceDir, sessionDir, "AGENTS.md") || refreshed
+
   // Symlink .opencode directory for skills, tools, commands
   symlinkDir(sourceDir, sessionDir, ".opencode")
+
+  return refreshed
+}
+
+/**
+ * Returns true if the source opencode.json content differs from the snapshot
+ * currently stored in the session directory (or if no snapshot exists yet).
+ *
+ * Callers should use this to decide whether to invalidate the existing
+ * ACP session so the next message is served by a freshly spawned opencode
+ * acp child that loads the updated configuration.
+ */
+export function hasOpenCodeConfigChanged(sessionDir: string, projectDir?: string): boolean {
+  const sourceDir = projectDir || process.cwd()
+  const sourcePath = path.join(sourceDir, "opencode.json")
+  const targetPath = path.join(sessionDir, "opencode.json")
+
+  if (!fs.existsSync(sourcePath)) return false
+  if (!fs.existsSync(targetPath)) return true
+
+  const sourceHash = hashFile(sourcePath)
+  const targetHash = hashFile(targetPath)
+  return sourceHash !== null && targetHash !== null && sourceHash !== targetHash
 }
 
 /**
