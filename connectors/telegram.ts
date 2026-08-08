@@ -49,6 +49,7 @@ import {
   extractDocPaths,
   removeImageMarkers,
   removeDocMarkers,
+  stripThinkBlocks,
   sanitizeServerPaths,
   getSessionDir,
   ensureSessionDir,
@@ -1462,7 +1463,7 @@ export class TelegramConnector extends BaseConnector<ChatSession> {
 
         // Final cleaned response
         const cleanResponse = sanitizeServerPaths(
-          removeDocMarkers(removeImageMarkers(responseBuffer))
+          removeDocMarkers(removeImageMarkers(stripThinkBlocks(responseBuffer)))
         )
         if (cleanResponse) {
           session.outputChars += cleanResponse.length
