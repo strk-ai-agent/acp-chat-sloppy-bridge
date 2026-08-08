@@ -49,6 +49,7 @@ import {
   shouldShowToolOutput,
   extractImagePaths,
   removeImageMarkers,
+  stripThinkBlocks,
   sanitizeServerPaths,
 } from "../src"
 
@@ -589,7 +590,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       session.lastEventIds.set(context.replyThreadRootId, context.eventId)
 
       let attempt = await runAttempt(session)
-      let cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+      let cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
       let diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
 
       if (diagnostic?.source === "bridge-capture-lost") {
@@ -599,7 +600,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
           `cleanChars=${diagnostic.cleanChars} chunks=${attempt.chunkCount} [${context.sessionId}]`,
         )
         attempt.responseBuffer = attempt.acpResponse
-        cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+        cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
         diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
       }
 
@@ -624,7 +625,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
           session.inputChars += query.length
           session.lastEventIds.set(context.replyThreadRootId, context.eventId)
           attempt = await runAttempt(session)
-          cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+          cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
           diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
 
           if (diagnostic?.source === "bridge-capture-lost") {
@@ -634,7 +635,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
               `cleanChars=${diagnostic.cleanChars} chunks=${attempt.chunkCount} [${context.sessionId}]`,
             )
             attempt.responseBuffer = attempt.acpResponse
-            cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+            cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
             diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
           }
 
