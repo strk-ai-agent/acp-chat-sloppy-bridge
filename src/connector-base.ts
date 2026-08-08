@@ -12,14 +12,15 @@ import { createHash } from "crypto"
 import { ACPClient, type ACPSessionInfo, type ActivityEvent, type LoadedSessionHistoryItem, type OpenCodeCommand, type ToolActivityRevision } from "./acp-client"
 import { getConfig, type ACPConfig, type ToolMessageMode, type ToolMessagesConfig } from "./config"
 import { ACPSessionStore } from "./session-store"
-import { 
-  getSessionDir, 
-  ensureSessionDir, 
-  cleanupOldSessions, 
+import {
+  getSessionDir,
+  ensureSessionDir,
+  cleanupOldSessions,
   estimateTokens,
   getSessionStorageInfo,
   copyOpenCodeConfig,
   copyACPProfile,
+  hasOpenCodeConfigChanged,
 } from "./session-utils"
 
 // =============================================================================
@@ -857,11 +858,21 @@ export abstract class BaseConnector<TSession extends BaseSession> {
     createSessionData: (client: ACPClient) => TSession
   ): Promise<TSession | null> {
     let session = this.sessionManager.get(id)
-    
+
+    // If the source opencode.json content differs from the cached snapshot,
+    // invalidate any existing session so the next message is served by a
+    // freshly spawned opencode acp child that loads the new configuration.
+    // Running children never reload config themselves.
+    const sessionDir = getSessionDir(this.config.connector, id)
+    ensureSessionDir(sessionDir)
+    if (hasOpenCodeConfigChanged(sessionDir)) {
+      this.log(`[CONFIG] opencode.json changed for ${id}; invalidating session`)
+      await this.invalidateACPSession(id)
+      session = undefined
+    }
+
     if (!session) {
-      const sessionDir = getSessionDir(this.config.connector, id)
-      ensureSessionDir(sessionDir)
-      copyOpenCodeConfig(sessionDir)  // Apply security permissions
+      copyOpenCodeConfig(sessionDir)  // Refresh snapshot before spawning ACP
       copyACPProfile(sessionDir, this.acpConfig.profileDir)
       const canonicalDir = fs.realpathSync(sessionDir)
       const client = this.createACPClient(canonicalDir)
