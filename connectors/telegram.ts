@@ -75,6 +75,24 @@ const MAX_DOWNLOAD_BYTES = Math.min(
 )
 const MAX_ATTACHMENTS_PER_MESSAGE = Math.max(1, config.telegram.attachments?.maxFilesPerMessage ?? 4)
 
+/**
+ * Return true if the error indicates the opencode acp child has died
+ * (process exited, broken pipe, or stdio already destroyed). Such errors
+ * mean the in-memory ACPClient is no longer usable and should be replaced
+ * before the next user message.
+ */
+function isACPClientDeadError(err: unknown): boolean {
+  if (!err) return false
+  const msg = err instanceof Error ? err.message : String(err)
+  if (!msg) return false
+  return (
+    msg.includes("ACP process exited") ||
+    msg.includes("ACP client is not connected") ||
+    msg.includes("ACP prompt failed:") ||
+    /EPIPE|ECONNRESET|ERR_STREAM_DESTROYED/.test(msg)
+  )
+}
+
 // =============================================================================
 // Telegram Bot API helpers
 // =============================================================================
@@ -1354,6 +1372,17 @@ export class TelegramConnector extends BaseConnector<ChatSession> {
       } catch (err) {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
         this.logError(`[FAIL] ${elapsed}s [${context.sessionId}]:`, err)
+
+        // If the ACP child has died (process exited, broken pipe, etc.)
+        // recreate the session so subsequent messages do not keep failing
+        // against the same dead client. Transient backend errors stay as-is.
+        if (isACPClientDeadError(err)) {
+          this.log(`[RECOVER] ACP client appears dead for ${context.sessionId}; recreating session`)
+          await this.recreateACPSession(context.sessionId, (client) =>
+            this.createSession(client)
+          )
+        }
+
         await this.sendReply(context, CommandHandler.formatProcessingErrorMessage())
       } finally {
         await toolActivity.flush()
