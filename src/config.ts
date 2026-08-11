@@ -106,6 +106,38 @@ export interface WebAttachmentsConfig {
   allowedMimeTypes: string[]
 }
 
+export interface IRCConfig {
+  enabled: boolean
+  /** IRC server hostname -- env: IRC_HOST */
+  host: string
+  /** IRC server port (default 6697 for TLS) -- env: IRC_PORT */
+  port: number
+  /** Use TLS for the IRC connection -- env: IRC_TLS (default true) */
+  tls: boolean
+  /** Bot nick -- env: IRC_NICK */
+  nick: string
+  /** IRC USER field ident -- env: IRC_USERNAME (defaults to nick) */
+  username: string
+  /** IRC USER field realname -- env: IRC_REALNAME */
+  realname: string
+  /** SASL PLAIN password (sent as AUTHENTICATE PLAIN). Empty disables SASL. */
+  password: string
+  /** NickServ password used to IDENTIFY after registration. Empty disables. */
+  nickservPassword: string
+  /** Channels to join on connect (e.g., ["#opencode"]) */
+  channels: string[]
+  /** Comma-separated nick and host globs allowed to interact with the bot.
+   *  Format: "<nick> <host_glob>", one per entry.
+   *  See docs/IRC_SETUP.md for the three-factor trust model. */
+  allowedUsers: string[]
+  /** Comma-separated nick names to ignore entirely */
+  ignoreUsers: string[]
+  /** Respond when the bot is addressed by nick ("botname: ..."/"botname, ...") */
+  respondToMentions: boolean
+  /** Maximum byte length per PRIVMSG body (IRC hard limit is 512 incl CRLF) */
+  maxLineBytes: number
+}
+
 export interface WebConfig {
   enabled: boolean
   port: number
@@ -160,6 +192,7 @@ export interface ChatBridgeConfig {
   discord: DiscordConfig
   telegram: TelegramConfig
   web: WebConfig
+  irc: IRCConfig
 }
 
 // Default configuration
@@ -265,6 +298,22 @@ const defaultConfig: ChatBridgeConfig = {
       resizeMaxDimension: 2048,
       allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
     },
+  },
+  irc: {
+    enabled: false,
+    host: "",
+    port: 6697,
+    tls: true,
+    nick: "opencode-bot",
+    username: "opencode-bot",
+    realname: "OpenCode Chat Bridge",
+    password: "",
+    nickservPassword: "",
+    channels: [],
+    allowedUsers: [],
+    ignoreUsers: [],
+    respondToMentions: true,
+    maxLineBytes: 400,
   }
 }
 

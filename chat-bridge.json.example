@@ -89,5 +89,21 @@
     "host": "0.0.0.0",
     "allowedOrigins": ["*"],
     "publicUrl": ""
+  },
+  "irc": {
+    "enabled": false,
+    "host": "{env:IRC_HOST}",
+    "port": 6697,
+    "tls": true,
+    "nick": "{env:IRC_NICK}",
+    "username": "{env:IRC_USERNAME}",
+    "realname": "OpenCode Chat Bridge",
+    "password": "{env:IRC_PASSWORD}",
+    "nickservPassword": "{env:IRC_NICKSERV_PASSWORD}",
+    "channels": ["#opencode"],
+    "allowedUsers": [],
+    "ignoreUsers": [],
+    "respondToMentions": true,
+    "maxLineBytes": 400
   }
 }
