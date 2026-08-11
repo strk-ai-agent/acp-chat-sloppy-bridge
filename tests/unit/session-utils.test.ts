@@ -15,6 +15,7 @@ import {
   estimateTokens,
   extractImagePaths,
   removeImageMarkers,
+  stripThinkBlocks,
   copyOpenCodeConfig,
   copyACPProfile,
 } from "../../src/session-utils"
@@ -426,5 +427,95 @@ describe("cleanupOldSessions", () => {
     expect(result).toBe(1)
     expect(fs.existsSync(oldSession)).toBe(false)
     expect(fs.existsSync(newSession)).toBe(true)
+  })
+})
+
+// =============================================================================
+// stripThinkBlocks
+// =============================================================================
+
+describe("stripThinkBlocks", () => {
+  test("removes a single think block at the start of the response", () => {
+    const text = "<think>Let me reason about this...</think>The answer is 42."
+    expect(stripThinkBlocks(text)).toBe("The answer is 42.")
+  })
+
+  test("removes a think block in the middle of the response", () => {
+    const text = "Hello <think>reasoning</think> world"
+    expect(stripThinkBlocks(text)).toBe("Hello  world")
+  })
+
+  test("removes a think block at the end of the response", () => {
+    const text = "The answer is 42.<think>now I will stop</think>"
+    expect(stripThinkBlocks(text)).toBe("The answer is 42.")
+  })
+
+  test("removes a think block spanning multiple lines", () => {
+    const text = "<think>line one\nline two\nline three</think>\nFinal answer."
+    expect(stripThinkBlocks(text)).toBe("Final answer.")
+  })
+
+  test("removes multiple think blocks", () => {
+    const text = "<think>first reasoning</think>Step 1.<think>second reasoning</think>Step 2."
+    expect(stripThinkBlocks(text)).toBe("Step 1.Step 2.")
+  })
+
+  test("is case-insensitive", () => {
+    const text = "<THINK>uppercase tags</THINK>kept"
+    expect(stripThinkBlocks(text)).toBe("kept")
+  })
+
+  test("matches mixed-case tags", () => {
+    const text = "<Think>Mixed</Think>kept"
+    expect(stripThinkBlocks(text)).toBe("kept")
+  })
+
+  test("returns original text when no think blocks", () => {
+    const text = "Just regular text without any think blocks."
+    expect(stripThinkBlocks(text)).toBe("Just regular text without any think blocks.")
+  })
+
+  test("leaves unclosed think tags untouched", () => {
+    // Conservative: an unclosed <think> tag could be legitimate text
+    // (e.g. XML example, code snippet). Do not eat the rest of the message.
+    const text = "Unclosed <think> begins here and never closes"
+    expect(stripThinkBlocks(text)).toBe("Unclosed <think> begins here and never closes")
+  })
+
+  test("leaves a <think> opening tag with no closing tag alone", () => {
+    const text = "<think>only opening\nthe rest is reasoning"
+    expect(stripThinkBlocks(text)).toBe("<think>only opening\nthe rest is reasoning")
+  })
+
+  test("handles empty string", () => {
+    expect(stripThinkBlocks("")).toBe("")
+  })
+
+  test("returns empty string when response is only a think block", () => {
+    const text = "<think>only reasoning, no answer</think>"
+    expect(stripThinkBlocks(text)).toBe("")
+  })
+
+  test("preserves surrounding whitespace inside the response", () => {
+    const text = "<think>reasoning</think>\n\nThe actual answer."
+    expect(stripThinkBlocks(text)).toBe("The actual answer.")
+  })
+
+  test("does not match nested closing tags greedily", () => {
+    // Non-greedy match should stop at the first </think>.
+    const text = "<think>a</think>middle<think>b</think>end"
+    expect(stripThinkBlocks(text)).toBe("middleend")
+  })
+
+  test("preserves think-like text that is not a real think block", () => {
+    // <think>ish (missing slash) is not a closing tag, so the block is
+    // treated as unclosed and left alone.
+    const text = "Use <think>ish> as a placeholder"
+    expect(stripThinkBlocks(text)).toBe("Use <think>ish> as a placeholder")
+  })
+
+  test("preserves user prompts that mention <think> in code examples", () => {
+    const text = 'Example: `<think>should be visible</think>` literal sequence'
+    expect(stripThinkBlocks(text)).toBe("Example: `` literal sequence")
   })
 })

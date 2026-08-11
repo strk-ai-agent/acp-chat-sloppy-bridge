@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Leaked `<think>` blocks in chat responses** - Reasoning models that
+  emit `<think>...</think>` inline in the regular message stream
+  (Qwen-style, DeepSeek R1, etc.) no longer leak the raw tags and
+  reasoning content into every connector. A new `stripThinkBlocks`
+  helper runs alongside the existing image, document, and path
+  sanitizers. Only well-formed blocks are removed; unclosed tags and
+  the dedicated `agent_thought_chunk` reasoning channel are left alone.
 - **Web tool trace line breaks** - Activity and trace messages now preserve
   newlines and safely wrap long lines in widget, embedded, and full-page modes.
 - **Web reconnect state** - Session confirmation no longer clears queued or

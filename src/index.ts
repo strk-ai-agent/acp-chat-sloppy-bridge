@@ -20,6 +20,7 @@ export {
   extractDocPaths,
   removeImageMarkers,
   removeDocMarkers,
+  stripThinkBlocks,
   sanitizeServerPaths,
   copyOpenCodeConfig,
   copyACPProfile,

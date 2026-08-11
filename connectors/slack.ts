@@ -33,6 +33,7 @@ import {
   shouldShowToolOutput,
   extractImagePaths,
   removeImageMarkers,
+  stripThinkBlocks,
   sanitizeServerPaths,
 } from "../src"
 
@@ -554,7 +555,7 @@ export class SlackConnector extends BaseConnector<ChannelSession> {
       }
 
       // Clean response and send
-      const cleanResponse = sanitizeServerPaths(removeImageMarkers(responseBuffer))
+      const cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(responseBuffer)))
       if (cleanResponse) {
         session.outputChars += cleanResponse.length
         await this.sendReply(slackClient, context, cleanResponse)

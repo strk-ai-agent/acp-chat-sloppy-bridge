@@ -32,7 +32,6 @@ import {
   LogService,
   MatrixAuth,
   MatrixClient,
-  MessageEvent,
   RichConsoleLogger,
   RustSdkCryptoStorageProvider,
   SimpleFsStorageProvider,
@@ -49,6 +48,7 @@ import {
   shouldShowToolOutput,
   extractImagePaths,
   removeImageMarkers,
+  stripThinkBlocks,
   sanitizeServerPaths,
 } from "../src"
 
@@ -77,6 +77,22 @@ const STATE_STORAGE_PATH = path.join(STORAGE_PATH, "bot-state.json")
 const CRYPTO_STORAGE_PATH = path.join(STORAGE_PATH, "crypto")
 const TOKEN_FILE_PATH = path.join(STORAGE_PATH, "access_token")
 
+// Escape special regex characters so user-supplied botName values can be
+// safely interpolated into the botName: trigger pattern.
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+// Pattern matching lines that start with the configured bot name followed by
+// a colon or whitespace, e.g. "opencode: hello" or "@opencode hello".
+// Built once at startup so per-message handling stays cheap.
+const BOT_NAME_TRIGGER_RE = BOT_NAME
+  ? new RegExp(`^@?${escapeRegex(BOT_NAME)}\\s*[:\\s]`, "i")
+  : null
+const BOT_NAME_TRIGGER_STRIP_RE = BOT_NAME
+  ? new RegExp(`^@?${escapeRegex(BOT_NAME)}\\s*[:\\s]*`, "i")
+  : null
+
 // =============================================================================
 // Thread Context Helpers (imported from standalone file for testability)
 // =============================================================================
@@ -84,6 +100,7 @@ const TOKEN_FILE_PATH = path.join(STORAGE_PATH, "access_token")
 export {
   type MatrixEventContext,
   extractThreadRootId,
+  extractReplyTargetId,
   resolveThreadRoot,
   buildMatrixSessionId,
   normalizeMatrixEventContext,
@@ -92,7 +109,7 @@ export {
 } from "./matrix-thread-helpers"
 import {
   type MatrixEventContext,
-  extractThreadRootId,
+  extractReplyTargetId,
   normalizeMatrixEventContext,
   buildThreadRelation,
   shouldHandleThreadReply,
@@ -106,6 +123,8 @@ import { diagnoseEmptyResponse } from "../src/acp-response-diagnostics"
 interface RoomSession extends BaseSession {
   /** Track the last event ID sent in each thread for m.in_reply_to fallback */
   lastEventIds: Map<string, string>
+  /** Every event ID the bot has sent in this session, used to detect replies to the bot */
+  botSentEventIds: Set<string>
 }
 
 // =============================================================================
@@ -167,11 +186,53 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     this.matrix = new MatrixClient(HOMESERVER, accessToken, stateStorage, cryptoStorage)
     AutojoinRoomsMixin.setupOnClient(this.matrix)
 
+    // matrix-bot-sdk's autojoin handler does `return client.joinRoom(roomId)`
+    // without awaiting the result. If the join fails (e.g. weechat-matrix-rs
+    // re-invites the bot into a room it was previously kicked from, the
+    // invite was rescinded, or the server returns M_FORBIDDEN for any other
+    // reason) the rejected promise becomes an unhandled rejection in Bun,
+    // which aborts the process and trips the Rust napi-rs tokio runtime panic
+    // during cleanup. Replace the handler with a guarded version.
+    this.matrix.removeAllListeners("room.invite")
+    this.matrix.on("room.invite", async (roomId: string, _inviteEvent: any) => {
+      try {
+        await this.matrix!.joinRoom(roomId)
+      } catch (err) {
+        this.logError(`Failed to auto-join room ${roomId}:`, err)
+      }
+    })
+
+    // Same issue for the crypto client hooks that matrix-bot-sdk installs
+    // whenever a RustSdkCryptoStorageProvider is configured. Those handlers
+    // also ignore the returned promise, so a failure inside the crypto
+    // engine (for example while bootstrapping an encrypted DM room) would
+    // surface as an unhandled rejection and tear down the bot. Wrap them.
+    const cryptoClient = (this.matrix as any).crypto
+    if (cryptoClient) {
+      this.matrix.removeAllListeners("room.join")
+      this.matrix.on("room.join", (roomId: string) => {
+        cryptoClient.onRoomJoin(roomId).catch((err: Error) => {
+          this.logError(`[CRYPTO] onRoomJoin failed for ${roomId}:`, err)
+        })
+      })
+
+      this.matrix.removeAllListeners("room.event")
+      this.matrix.on("room.event", (roomId: string, event: any) => {
+        cryptoClient.onRoomEvent(roomId, event).catch((err: Error) => {
+          this.logError(`[CRYPTO] onRoomEvent failed for ${roomId}:`, err)
+        })
+      })
+    }
+
     this.matrix.on("room.failed_decryption", async (roomId: string, event: any, error: Error) => {
       this.log(`[CRYPTO] Failed to decrypt in ${roomId}: ${error.message}`)
     })
 
-    this.matrix.on("room.message", this.handleRoomMessage.bind(this))
+    this.matrix.on("room.message", (roomId: string, event: any) => {
+      this.handleRoomMessage(roomId, event).catch((err) => {
+        this.logError(`Failed to handle Matrix message in ${roomId}:`, err)
+      })
+    })
     await this.matrix.start()
 
     this.startSessionExpiryLoop()
@@ -182,7 +243,35 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     this.log("Stopping...")
     await this.disconnectAllSessions()
     if (this.matrix) this.matrix.stop()
+    // Explicitly close the Rust OlmMachine so its background tokio tasks
+    // stop before the process exits. Otherwise the napi-rs cleanup hook
+    // drops the tokio runtime while a JS callback is still pending,
+    // causing:
+    //   panicked at .../napi-2.16.17/src/tokio_runtime.rs:114:47:
+    //   called `Option::unwrap()` on a `None` value
+    this.closeCryptoEngine()
     this.log("Stopped.")
+  }
+
+  /**
+   * Close the native Rust crypto engine (OlmMachine) if E2EE is enabled.
+   *
+   * The matrix-bot-sdk does not expose a close hook for the underlying
+   * OlmMachine, but failing to close it leaves tokio tasks pending. When
+   * the Bun process exits, the napi-rs env cleanup drops the tokio
+   * runtime, and any thread-safe function callback that fires afterwards
+   * panics on `Option::unwrap()`.
+   */
+  private closeCryptoEngine(): void {
+    try {
+      const crypto = (this.matrix as any)?.crypto
+      const machine = crypto?.engine?.machine
+      if (machine && typeof machine.close === "function") {
+        machine.close()
+      }
+    } catch (err) {
+      this.logError("Failed to close crypto engine (ignoring):", err)
+    }
   }
 
   async sendMessage(roomId: string, text: string): Promise<void> {
@@ -201,6 +290,17 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     } catch (err) {
       this.logError(`Failed to send message to ${roomId}:`, err)
     }
+  }
+
+  /**
+   * Record an event ID the bot sent so we can detect replies to ourselves.
+   * No-op if there is no live session for the context (the set is in-memory
+   * and lives as long as the session does).
+   */
+  private recordBotEventId(context: MatrixEventContext, eventId: string): void {
+    if (!eventId) return
+    const session = this.sessionManager.get(context.sessionId)
+    if (session) session.botSentEventIds.add(eventId)
   }
 
   /**
@@ -239,10 +339,25 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
         if (session && eventId) {
           session.lastEventIds.set(context.replyThreadRootId, eventId)
         }
+        this.recordBotEventId(context, eventId)
         return eventId
       } else {
-        await this.sendMessage(context.roomId, text)
-        return null
+        // Inline the send so we can capture the eventId for reply detection.
+        let content: any
+        if (FORMAT_HTML) {
+          const html = await marked.parse(text)
+          content = {
+            msgtype: "m.text",
+            body: text,
+            format: "org.matrix.custom.html",
+            formatted_body: html,
+          }
+        } else {
+          content = { msgtype: "m.text", body: text }
+        }
+        const eventId = await this.matrix!.sendMessage(context.roomId, content)
+        this.recordBotEventId(context, eventId)
+        return eventId || null
       }
     } catch (err) {
       this.logError(`Failed to send reply to ${context.roomId}:`, err)
@@ -268,8 +383,10 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
         if (session && eventId) {
           session.lastEventIds.set(context.replyThreadRootId, eventId)
         }
+        this.recordBotEventId(context, eventId)
       } else {
-        await this.matrix!.sendNotice(context.roomId, text)
+        const eventId = await this.matrix!.sendNotice(context.roomId, text)
+        this.recordBotEventId(context, eventId)
       }
     } catch (err) {
       this.logError(`Failed to send notice to ${context.roomId}:`, err)
@@ -292,6 +409,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     if (this.threadIsolation && session && eventId) {
       session.lastEventIds.set(context.replyThreadRootId, eventId)
     }
+    this.recordBotEventId(context, eventId)
     return eventId || null
   }
 
@@ -355,25 +473,31 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
   // ---------------------------------------------------------------------------
 
   private async handleRoomMessage(roomId: string, event: any): Promise<void> {
-    const message = new MessageEvent(event)
+    // Redacted events have empty content, and malformed events may contain
+    // non-string fields. Reading those through MessageEvent's getters throws,
+    // so validate the raw event before doing any asynchronous work.
+    const content = event?.content
+    if (!content || typeof content !== "object") return
+    if (content.msgtype !== "m.text" || typeof content.body !== "string") return
 
-    if (message.messageType !== "m.text") return
+    const sender = event?.sender
+    if (typeof sender !== "string" || !sender) return
+
+    const body = content.body.trim()
+    if (!body) return
 
     const myUserId = await this.matrix!.getUserId()
-    if (message.sender === myUserId) return
-    if (!this.isUserAllowed(message.sender)) return
-
-    const body = message.textBody.trim()
-    if (!body) return
+    if (sender === myUserId) return
+    if (!this.isUserAllowed(sender)) return
 
     // Deduplicate events (Matrix sync replays)
     if (this.isDuplicateEvent(event.event_id || `${roomId}:${Date.now()}`)) return
 
-    const threadRootEventId = extractThreadRootId(event)
+    const threadRootEventId = extractReplyTargetId(event, this.threadIsolation)
 
     const context = normalizeMatrixEventContext({
       roomId,
-      sender: message.sender,
+      sender,
       text: body,
       eventId: event.event_id,
       threadRootEventId,
@@ -383,9 +507,18 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     const existingSession = this.sessionManager.get(context.sessionId)
     if (existingSession) existingSession.lastActivity = new Date()
 
-    // Check if this is a DM
-    const members = await this.matrix!.getJoinedRoomMembers(roomId)
-    const isDM = members.length === 2
+    // Check if this is a DM. The homeserver may return M_FORBIDDEN for a
+    // room we haven't fully joined yet (e.g. a DM that weechat-matrix-rs
+    // just created and re-invited us into). Treat that as "not a DM"
+    // rather than letting the rejection bubble up and tear down the bot.
+    let isDM = false
+    try {
+      const members = await this.matrix!.getJoinedRoomMembers(roomId)
+      isDM = members.length === 2
+    } catch (err) {
+      this.logError(`Failed to query members of ${roomId}; assuming not a DM:`, err)
+      return
+    }
 
     // Extract query
     let query = ""
@@ -393,21 +526,35 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       query = body.slice(TRIGGER.length + 1).trim()
     } else if (body.startsWith(TRIGGER)) {
       query = body.slice(TRIGGER.length).trim()
+    } else if (BOT_NAME_TRIGGER_RE && BOT_NAME_TRIGGER_RE.test(body)) {
+      // Lines starting with the configured bot name, e.g. "opencode: hello".
+      // Accepts an optional leading "@" so "@opencode: hello" works too.
+      query = body.replace(BOT_NAME_TRIGGER_STRIP_RE!, "").trim()
     } else if (body.includes(myUserId)) {
       query = body.replace(myUserId, "").trim()
-    } else if (body.match(/^@?bot[:\s]/i)) {
-      query = body.replace(/^@?bot[:\s]*/i, "").trim()
     } else if (isDM) {
       query = body
-    } else if (this.threadIsolation && shouldHandleThreadReply({
+    } else if (shouldHandleThreadReply({
       text: body,
       threadRootEventId,
       trigger: TRIGGER,
       botUserId: myUserId,
     }) && this.sessionManager.has(context.sessionId)) {
-      // Implicit thread follow-up
+      // m.thread replies are accepted unconditionally when threadIsolation is
+      // on (anyone in the thread can continue the conversation).
+      //
+      // When threadIsolation is off, only count plain m.in_reply_to replies
+      // that target a message the bot itself sent — anything else is just
+      // someone replying to a third party in the room.
+      if (!this.threadIsolation) {
+        const session = this.sessionManager.get(context.sessionId)!
+        if (!session.botSentEventIds.has(threadRootEventId)) {
+          return
+        }
+      }
       query = body
-      this.log(`[THREAD] ${message.sender} in ${context.sessionId}: ${body}`)
+      const kind = this.threadIsolation ? "THREAD" : "REPLY"
+      this.log(`[${kind}] ${sender} in ${context.sessionId}: ${body}`)
     } else {
       return
     }
@@ -415,7 +562,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     query = query.replace(/^[:\s]+/, "").trim()
     if (!query) return
 
-    this.log(`[MSG] ${message.sender} in ${context.sessionId}: ${body}`)
+    this.log(`[MSG] ${sender} in ${context.sessionId}: ${body}`)
 
     await this.stopMirrorForUserActivity(context.sessionId, query, async (text) => {
       await this.sendNoticeReply(context, text)
@@ -434,12 +581,12 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       }
 
       this.log(`[CMD] Forwarding to OpenCode: ${query}`)
-      if (!this.checkRateLimit(message.sender)) return
+      if (!this.checkRateLimit(sender)) return
       await this.processQuery(context, query)
       return
     }
 
-    if (!this.checkRateLimit(message.sender)) return
+    if (!this.checkRateLimit(sender)) return
     await this.processQuery(context, query)
   }
 
@@ -589,7 +736,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
       session.lastEventIds.set(context.replyThreadRootId, context.eventId)
 
       let attempt = await runAttempt(session)
-      let cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+      let cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
       let diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
 
       if (diagnostic?.source === "bridge-capture-lost") {
@@ -599,7 +746,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
           `cleanChars=${diagnostic.cleanChars} chunks=${attempt.chunkCount} [${context.sessionId}]`,
         )
         attempt.responseBuffer = attempt.acpResponse
-        cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+        cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
         diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
       }
 
@@ -624,7 +771,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
           session.inputChars += query.length
           session.lastEventIds.set(context.replyThreadRootId, context.eventId)
           attempt = await runAttempt(session)
-          cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+          cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
           diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
 
           if (diagnostic?.source === "bridge-capture-lost") {
@@ -634,7 +781,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
               `cleanChars=${diagnostic.cleanChars} chunks=${attempt.chunkCount} [${context.sessionId}]`,
             )
             attempt.responseBuffer = attempt.acpResponse
-            cleanResponse = sanitizeServerPaths(removeImageMarkers(attempt.responseBuffer))
+            cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(attempt.responseBuffer)))
             diagnostic = diagnoseEmptyResponse(attempt.acpResponse, attempt.responseBuffer, cleanResponse)
           }
 
@@ -710,6 +857,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
     return {
       ...this.createBaseSession(client),
       lastEventIds: new Map(),
+      botSentEventIds: new Set(),
     }
   }
 
@@ -742,6 +890,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
           session.lastEventIds.set(context.replyThreadRootId, eventId)
         }
       }
+      this.recordBotEventId(context, eventId)
 
       this.log(`Sent image to ${context.roomId}: ${mxcUrl}`)
     } catch (err) {
@@ -781,6 +930,7 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
           session.lastEventIds.set(context.replyThreadRootId, eventId)
         }
       }
+      this.recordBotEventId(context, eventId)
 
       this.log(`Sent image from file to ${context.roomId}: ${mxcUrl}`)
     } catch (err) {
@@ -795,6 +945,22 @@ export class MatrixConnector extends BaseConnector<RoomSession> {
 
 async function main() {
   const connector = new MatrixConnector()
+
+  // Last-resort guard against unhandled promise rejections. Even though
+  // every public connector code path awaits its work in a try/catch, the
+  // matrix-bot-sdk installs internal listeners (autojoin, crypto room
+  // events) that may themselves reject. An unhandled rejection in Bun
+  // aborts the process and the resulting jolt to the napi-rs tokio runtime
+  // is what produces the "called `Option::unwrap()` on a `None` value"
+  // panic. Logging and continuing keeps the bot alive long enough to
+  // surface the underlying error.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[MATRIX] Unhandled rejection:", reason)
+  })
+  process.on("uncaughtException", (err) => {
+    console.error("[MATRIX] Uncaught exception:", err)
+  })
+
   process.on("SIGINT", async () => { await connector.stop(); process.exit(0) })
   process.on("SIGTERM", async () => { await connector.stop(); process.exit(0) })
   await connector.start()
