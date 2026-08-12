@@ -74,6 +74,23 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ## ACP Protocol Debugging
 
+### Enable Bridge ACP Tracing
+
+Set `BRIDGE_DEBUG=1` when starting a connector:
+
+```bash
+BRIDGE_DEBUG=1 bun connectors/telegram.ts
+```
+
+The bridge creates and appends to `logs/bridge-debug.log` under its current
+working directory. The directory is created automatically. If the trace cannot
+be written, the connector reports one error, disables tracing, and continues
+processing normally.
+
+The trace can contain message fragments and protocol metadata. Treat it as
+sensitive, redact it before sharing, and remove it when troubleshooting is
+complete.
+
 ### View Raw ACP Messages
 
 Create a test script:

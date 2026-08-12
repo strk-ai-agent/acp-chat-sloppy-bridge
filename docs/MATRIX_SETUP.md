@@ -68,14 +68,14 @@ MATRIX_HOMESERVER=https://matrix.org
 MATRIX_USER_ID=@my-opencode-bot:matrix.org
 MATRIX_TRIGGER=!oc
 
-# Option A: Password login (recommended - handles token refresh)
+# Option A: Password login (recommended - replaces expired cached tokens)
 MATRIX_PASSWORD=your-bot-password
 
 # Option B: Access token (manual - may expire)
 # MATRIX_ACCESS_TOKEN=syt_xxxxx...
 ```
 
-**Recommended:** Use password login. The bot will automatically obtain and cache an access token.
+**Recommended:** Use password login. The bot obtains and caches an access token, validates it at startup, and logs in again only when Matrix rejects the cached token or it belongs to another user. Temporary network or homeserver failures do not replace the token.
 
 ## Step 4: Run the Connector
 
@@ -197,7 +197,7 @@ The bot supports end-to-end encrypted rooms using native Rust crypto:
 **Storage location:** `~/.local/share/opencode-matrix-bot/`
 - `bot-state.json` - sync state
 - `crypto/` - encryption keys (back this up!)
-- `access_token` - cached login token
+- `access_token` - cached login token (validated at startup; stored with owner-only permissions)
 
 **"Unverified device" warning:** This is cosmetic. E2EE works correctly. To remove it, verify the bot's device manually from Element (Settings > Security > Sessions).
 

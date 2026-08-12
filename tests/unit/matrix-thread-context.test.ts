@@ -6,6 +6,7 @@ import { describe, test, expect } from "bun:test"
 import {
   extractThreadRootId,
   extractReplyTargetId,
+  extractBotNameQuery,
   resolveThreadRoot,
   buildMatrixSessionId,
   normalizeMatrixEventContext,
@@ -129,6 +130,31 @@ describe("extractReplyTargetId", () => {
       },
     }
     expect(extractReplyTargetId(event, false)).toBe("$thread_root")
+  })
+})
+
+// =============================================================================
+// extractBotNameQuery
+// =============================================================================
+
+describe("extractBotNameQuery", () => {
+  test("uses the configured bot name", () => {
+    expect(extractBotNameQuery("opencode: summarize this", "opencode")).toBe("summarize this")
+    expect(extractBotNameQuery("@OpenCode explain", "opencode")).toBe("explain")
+  })
+
+  test("escapes bot names implicitly by avoiding dynamic regular expressions", () => {
+    expect(extractBotNameQuery("agent[1]: run", "agent[1]")).toBe("run")
+  })
+
+  test("does not match the old hardcoded name or partial words", () => {
+    expect(extractBotNameQuery("bot: summarize this", "opencode")).toBeNull()
+    expect(extractBotNameQuery("opencodeish: summarize this", "opencode")).toBeNull()
+  })
+
+  test("requires a non-empty configured name and a separator", () => {
+    expect(extractBotNameQuery("opencode: summarize this", "")).toBeNull()
+    expect(extractBotNameQuery("opencode", "opencode")).toBeNull()
   })
 })
 

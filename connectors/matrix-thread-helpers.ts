@@ -57,6 +57,26 @@ export function extractReplyTargetId(event: any, threadIsolation: boolean): stri
   return inReplyTo || ""
 }
 
+/*
+ * Extract a query prefixed by the configured bot name.
+ * Accepts "name: query", "name query", and optional leading "@" forms.
+ */
+export function extractBotNameQuery(text: string, botName: string): string | null {
+  const name = botName.trim()
+  if (!name) return null
+
+  const prefixes = [`@${name}`, name]
+
+  for (const prefix of prefixes) {
+    if (text.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) continue
+    const separator = text.charAt(prefix.length)
+    if (separator !== ":" && !/\s/.test(separator)) continue
+    return text.slice(prefix.length).replace(/^[:\s]+/, "").trim()
+  }
+
+  return null
+}
+
 /**
  * Resolve the thread root event ID.
  * If the event is in a thread, use the thread root. Otherwise use the event itself.

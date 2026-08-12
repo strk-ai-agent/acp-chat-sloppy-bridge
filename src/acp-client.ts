@@ -4,19 +4,22 @@
 
 import { spawn, type ChildProcess } from "child_process"
 import { EventEmitter } from "events"
-import { existsSync, appendFileSync } from "fs"
+import { existsSync } from "fs"
 import { homedir } from "os"
 import { join } from "path"
+import { createDebugLogger } from "./debug-log"
 
 // Debug trace — writes to logs/bridge-debug.log when BRIDGE_DEBUG=1
-const BRIDGE_DEBUG = process.env.BRIDGE_DEBUG === "1"
 const BRIDGE_DEBUG_LOG = join(process.cwd(), "logs", "bridge-debug.log")
+const dbg = createDebugLogger({
+  enabled: process.env.BRIDGE_DEBUG === "1",
+  filePath: BRIDGE_DEBUG_LOG,
+  onError: (error) => {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(`[ACP] Debug logging disabled: ${detail}`)
+  },
+})
 const MAX_TOOL_ARG_VALUE_LENGTH = 80
-function dbg(msg: string): void {
-  if (!BRIDGE_DEBUG) return
-  const ts = new Date().toISOString()
-  appendFileSync(BRIDGE_DEBUG_LOG, `[${ts}] ${msg}\n`)
-}
 
 // Find the opencode executable
 function findOpencode(): string {
