@@ -410,7 +410,7 @@ export function extractDocPaths(text: string): string[] {
 
 /**
  * Remove all document markers from text
- *
+ * 
  * @param text - Text containing document markers
  * @returns Text with document markers removed
  */
@@ -418,37 +418,4 @@ export function removeDocMarkers(text: string): string {
   return text
     .replace(/\[DOCLIBRARY_DOC\][^\[]+\[\/DOCLIBRARY_DOC\]/gi, "")
     .trim()
-}
-
-// =============================================================================
-// Think Block Utilities
-// =============================================================================
-
-/**
- * Strip `<think>...</think>` blocks from model response text.
- *
- * Some reasoning models (Qwen-style, DeepSeek R1, etc.) emit a
- * `<think>...</think>` block inline in the regular `agent_message_chunk`
- * text stream rather than (or in addition to) using the dedicated
- * `agent_thought_chunk` channel. Without this filter the raw tags and
- * reasoning content leak into the chat on every connector.
- *
- * The match is intentionally conservative:
- * - Only well-formed (closed) blocks are removed. An unclosed `<think>`
- *   tag is left untouched to avoid eating legitimate text that happens
- *   to contain the literal sequence (XML examples, code snippets,
- *   documentation about reasoning formats, quoted transcripts, etc.).
- * - Matching is case-insensitive to be lenient with model output.
- * - Multiple blocks are all removed.
- * - The surrounding text is left otherwise intact and trimmed.
- *
- * Note: this only filters inline `<think>` blocks. The dedicated
- * `agent_thought_chunk` channel is handled separately by the ACP client
- * and never reaches the connectors.
- *
- * @param text - Text that may contain `<think>...</think>` blocks
- * @returns Text with well-formed think blocks removed
- */
-export function stripThinkBlocks(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim()
 }

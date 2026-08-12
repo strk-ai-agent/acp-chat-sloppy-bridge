@@ -32,7 +32,6 @@ import {
   shouldShowToolOutput,
   extractImagePaths,
   removeImageMarkers,
-  stripThinkBlocks,
   sanitizeServerPaths,
 } from "../src"
 
@@ -680,7 +679,7 @@ export class MattermostConnector extends BaseConnector<ChannelSession> {
       }
 
       // Send final response (never deduplicate against tool outputs)
-      const cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(responseBuffer)))
+      const cleanResponse = sanitizeServerPaths(removeImageMarkers(responseBuffer))
       if (cleanResponse) {
         session.outputChars += cleanResponse.length
         await this.sendReply(context, cleanResponse)

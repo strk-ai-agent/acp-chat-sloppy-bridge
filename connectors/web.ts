@@ -42,7 +42,6 @@ import {
   sanitizeServerPaths,
   extractImagePaths,
   removeImageMarkers,
-  stripThinkBlocks,
   extractDocPaths,
   removeDocMarkers,
 } from "../src"
@@ -607,7 +606,7 @@ export class WebConnector extends BaseConnector<WebSession> {
     }
 
     const cleanAttempt = (attempt: Awaited<ReturnType<typeof runAttempt>>) =>
-      sanitizeServerPaths(removeDocMarkers(removeImageMarkers(stripThinkBlocks(attempt.buf))))
+      sanitizeServerPaths(removeDocMarkers(removeImageMarkers(attempt.buf)))
 
     const sessionLabel = (session: WebSession) =>
       session.client.currentSessionId?.slice(0, 8) || "unknown"

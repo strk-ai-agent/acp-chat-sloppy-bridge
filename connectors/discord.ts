@@ -31,7 +31,6 @@ import {
   shouldShowToolOutput,
   extractImagePaths,
   removeImageMarkers,
-  stripThinkBlocks,
   sanitizeServerPaths,
 } from "../src"
 import { getConfig } from "../src/config"
@@ -334,7 +333,7 @@ class DiscordConnector extends BaseConnector<ChannelSession> {
       }
 
       // Clean response and send
-      const cleanResponse = sanitizeServerPaths(removeImageMarkers(stripThinkBlocks(responseBuffer)))
+      const cleanResponse = sanitizeServerPaths(removeImageMarkers(responseBuffer))
       if (cleanResponse) {
         session.outputChars += cleanResponse.length
         
