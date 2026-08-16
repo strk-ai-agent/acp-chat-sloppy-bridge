@@ -28,9 +28,12 @@ case "$CONNECTOR" in
   telegram)
     exec bun connectors/telegram.ts
     ;;
+  irc)
+    exec bun connectors/irc.ts
+    ;;
   *)
     echo "Unknown connector: $CONNECTOR"
-    echo "Valid options: discord, slack, matrix, whatsapp, mattermost, telegram"
+    echo "Valid options: discord, slack, matrix, whatsapp, mattermost, telegram, irc"
     exit 1
     ;;
 esac

@@ -22,7 +22,8 @@
     "mattermost": "bun connectors/mattermost.ts",
     "telegram": "bun connectors/telegram.ts",
     "cli": "bun src/cli.ts",
-    "web": "bun connectors/web.ts"
+    "web": "bun connectors/web.ts",
+    "irc": "bun connectors/irc.ts"
   },
   "keywords": [
     "opencode",
