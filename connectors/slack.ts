@@ -34,6 +34,7 @@ import {
   extractImagePaths,
   removeImageMarkers,
   sanitizeServerPaths,
+  CommandHandler,
 } from "../src"
 
 // =============================================================================
@@ -566,7 +567,7 @@ export class SlackConnector extends BaseConnector<ChannelSession> {
     } catch (err) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       this.logError(`[FAIL] ${elapsed}s [${sessionId}]:`, err)
-      await this.sendReply(slackClient, context, "Sorry, something went wrong processing your request.")
+      await this.sendReply(slackClient, context, CommandHandler.formatProviderErrorMessage(err))
     } finally {
       await toolActivity.flush()
       client?.off("activity", toolActivity.handleActivity)

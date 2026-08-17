@@ -88,6 +88,12 @@ const MAX_ATTACHMENTS_PER_MESSAGE = Math.max(1, config.telegram.attachments?.max
  * (process exited, broken pipe, or stdio already destroyed). Such errors
  * mean the in-memory ACPClient is no longer usable and should be replaced
  * before the next user message.
+ *
+ * NOTE: we intentionally do NOT match "ACP prompt failed:" here. That
+ * string is the universal prefix `ACPClient` throws for every non-zero
+ * `session/prompt` result (provider quota, auth, rate limit, anything).
+ * Matching it used to misclassify any upstream error as a dead ACP child
+ * and force-recreate the session, masking the real cause from the user.
  */
 function isACPClientDeadError(err: unknown): boolean {
   if (!err) return false
@@ -96,7 +102,7 @@ function isACPClientDeadError(err: unknown): boolean {
   return (
     msg.includes("ACP process exited") ||
     msg.includes("ACP client is not connected") ||
-    msg.includes("ACP prompt failed:") ||
+    msg.includes("ACP client disconnected") ||
     /EPIPE|ECONNRESET|ERR_STREAM_DESTROYED/.test(msg)
   )
 }
@@ -1487,7 +1493,7 @@ export class TelegramConnector extends BaseConnector<ChatSession> {
           )
         }
 
-        await this.sendReply(context, CommandHandler.formatProcessingErrorMessage())
+        await this.sendReply(context, CommandHandler.formatProviderErrorMessage(err))
       } finally {
         clearInterval(typingInterval)
         await toolActivity.flush()

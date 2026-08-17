@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Generic provider-error replies** - Connectors no longer reply with the
+  catch-all "Sorry, something went wrong processing your request." when the
+  upstream LLM provider rejects the request because the account ran out of
+  credits or hit a billing limit. `CommandHandler.classifyProviderError()`
+  inspects the error thrown by `client.prompt()` and `formatProviderErrorMessage()`
+  picks a specific message for quota/credits/billing, auth, rate-limit,
+  network, and dead-ACP-child errors. Falls back to the generic message for
+  anything that cannot be classified. The raw provider error still goes to
+  stderr via `logError`, so credentials are not leaked back to chat.
 - **ACP debug log startup** - `BRIDGE_DEBUG=1` now creates the missing `logs/`
   directory automatically. Trace-write failures disable debugging without
   interrupting connector processing.

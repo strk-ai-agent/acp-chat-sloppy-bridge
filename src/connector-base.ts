@@ -594,9 +594,154 @@ export class CommandHandler {
   static formatConnectionErrorMessage(): string {
     return "Sorry, I couldn't connect to the AI service."
   }
-  
+
   static formatProcessingErrorMessage(): string {
     return "Sorry, something went wrong processing your request."
+  }
+
+  /**
+   * Classify an error thrown by `client.prompt()` so callers can pick a
+   * user-facing message that actually explains what happened.
+   *
+   * The bridge does not get structured error data from opencode today --
+   * `session/prompt` either returns `{error: ...}` (which ACPClient wraps as
+   * `Error("ACP prompt failed: <JSON>")`) or the opencode child dies, in which
+   * case the thrown message starts with `ACP process exited` / `ACP client is
+   * not connected` or matches the standard Node stream-destroyed patterns.
+   *
+   * Categories:
+   * - `quota`     : the upstream provider rejected the request because the
+   *                 account ran out of credits / hit a billing cap (HTTP 402,
+   *                 or 401/429 carrying "quota", "credits", "billing",
+   *                 "insufficient_quota", "payment_required", etc.). This is
+   *                 the case the generic "something went wrong" message used
+   *                 to mask, leaving the user guessing why the bot stopped
+   *                 answering.
+   * - `auth`      : the provider rejected the credentials (HTTP 401, invalid
+   *                 API key, expired token).
+   * - `rate_limit`: the provider throttled the request (HTTP 429 with
+   *                 rate-limit wording, distinct from quota exhaustion).
+   * - `network`   : the request never reached the provider (DNS, TCP,
+   *                 timeout, TLS).
+   * - `acp_dead`  : the opencode acp child process exited or its stdio was
+   *                 destroyed -- the bridge should recreate the session.
+   * - `unknown`   : anything else; falls back to the generic message.
+   */
+  static classifyProviderError(err: unknown):
+    | "quota"
+    | "auth"
+    | "rate_limit"
+    | "network"
+    | "acp_dead"
+    | "unknown" {
+    const msg = err instanceof Error ? err.message : String(err ?? "")
+    if (!msg) return "unknown"
+
+    // Dead opencode child / broken stdio. NOTE: we intentionally do NOT match
+    // "ACP prompt failed:" here -- that prefix is what ACPClient throws for
+    // EVERY non-zero result (including provider quota/auth/rate errors), so
+    // matching it would shadow the more specific classifications below.
+    if (
+      msg.includes("ACP process exited") ||
+      msg.includes("ACP client is not connected") ||
+      msg.includes("ACP client disconnected") ||
+      /EPIPE|ECONNRESET|ERR_STREAM_DESTROYED/.test(msg)
+    ) {
+      return "acp_dead"
+    }
+
+    // Network-level failures before reaching the provider.
+    if (
+      /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|getaddrinfo|network/i.test(
+        msg,
+      )
+    ) {
+      return "network"
+    }
+
+    const lower = msg.toLowerCase()
+
+    // Quota / credits / billing -- check before generic 4xx handling so the
+    // message wins over a catch-all "auth" or "rate_limit" classification.
+    if (
+      /\b402\b/.test(msg) ||
+      /payment[_ ]required/.test(lower) ||
+      /insufficient[_ ]quota/.test(lower) ||
+      /quota[_ ]exceeded/.test(lower) ||
+      /\bquota\b/.test(lower) ||
+      /\bcredits?\b/.test(lower) ||
+      /\bbilling\b/.test(lower) ||
+      /\bsubscription\b/.test(lower) ||
+      /free[_ ]tier/.test(lower) ||
+      /credit[_ ]balance/.test(lower) ||
+      /balance[_ ]exhausted/.test(lower) ||
+      /hard[_ ]limit[_ ]reached/.test(lower)
+    ) {
+      return "quota"
+    }
+
+    // Auth failures.
+    if (
+      /\b401\b/.test(msg) ||
+      /unauthorized/.test(lower) ||
+      /invalid[_ ]api[_ ]key/.test(lower) ||
+      /authentication/.test(lower) ||
+      /incorrect[_ ]api[_ ]key/.test(lower)
+    ) {
+      return "auth"
+    }
+
+    // Rate limiting (distinct from quota exhaustion).
+    if (
+      /\b429\b/.test(msg) ||
+      /rate[_ ]limit/.test(lower) ||
+      /too[_ ]many[_ ]requests/.test(lower)
+    ) {
+      return "rate_limit"
+    }
+
+    return "unknown"
+  }
+
+  /**
+   * Pick a user-facing message for an error thrown by `client.prompt()`.
+   * Falls back to the generic `formatProcessingErrorMessage()` for anything
+   * we cannot classify. The exact provider error string stays on stderr
+   * (logged via `logError` in the connector catch block), so this message
+   * intentionally does not leak credentials or stack traces back to chat.
+   */
+  static formatProviderErrorMessage(err: unknown): string {
+    switch (CommandHandler.classifyProviderError(err)) {
+      case "quota":
+        return (
+          "The AI provider rejected the request -- your account has run out " +
+          "of credits or hit a billing limit. Top up or switch provider, " +
+          "then try again. (See server logs for the exact error.)"
+        )
+      case "auth":
+        return (
+          "The AI provider rejected the credentials. Check the API key " +
+          "configured for this bot. (See server logs for the exact error.)"
+        )
+      case "rate_limit":
+        return (
+          "The AI provider is rate-limiting requests. Try again in a minute. " +
+          "(See server logs for the exact error.)"
+        )
+      case "network":
+        return (
+          "I couldn't reach the AI provider (network error). Try again " +
+          "in a moment. (See server logs for the exact error.)"
+        )
+      case "acp_dead":
+        // The connector's catch block may still attempt to recreate the
+        // session (see isACPClientDeadError in connectors/telegram.ts), so
+        // the user only sees this message if recovery fails.
+        return "The local agent process died. Try sending your message again."
+      case "unknown":
+      default:
+        return CommandHandler.formatProcessingErrorMessage()
+    }
   }
 }
 
