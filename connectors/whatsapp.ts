@@ -39,6 +39,7 @@ import {
   removeImageMarkers,
   removeDocMarkers,
   sanitizeServerPaths,
+  CommandHandler,
 } from "../src"
 
 // =============================================================================
@@ -560,7 +561,7 @@ class WhatsAppConnector extends BaseConnector<ChatSession> {
         this.log(`[CANCELLED] ${elapsed}s: superseded by a newer WhatsApp query`)
       } else {
         this.logError(`[FAIL] ${elapsed}s:`, err)
-        await this.sendMessage(chatId, "Sorry, something went wrong processing your request.")
+        await this.sendMessage(chatId, CommandHandler.formatProviderErrorMessage(err))
       }
     } finally {
       if (timeoutId) clearTimeout(timeoutId)

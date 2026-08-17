@@ -33,6 +33,7 @@ import {
   extractImagePaths,
   removeImageMarkers,
   sanitizeServerPaths,
+  CommandHandler,
 } from "../src"
 
 // =============================================================================
@@ -692,7 +693,7 @@ export class MattermostConnector extends BaseConnector<ChannelSession> {
     } catch (err) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       this.logError(`[FAIL] ${elapsed}s [${context.sessionId}]:`, err)
-      await this.sendReply(context, "Sorry, something went wrong processing your request.")
+      await this.sendReply(context, CommandHandler.formatProviderErrorMessage(err))
     } finally {
       await toolActivity.flush()
       client.off("activity", toolActivity.handleActivity)

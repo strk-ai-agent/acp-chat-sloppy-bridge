@@ -32,6 +32,7 @@ import {
   extractImagePaths,
   removeImageMarkers,
   sanitizeServerPaths,
+  CommandHandler,
 } from "../src"
 import { getConfig } from "../src/config"
 
@@ -348,7 +349,7 @@ class DiscordConnector extends BaseConnector<ChannelSession> {
     } catch (err) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       this.logError(`[FAIL] ${elapsed}s:`, err)
-      await message.reply("Sorry, something went wrong processing your request.")
+      await message.reply(CommandHandler.formatProviderErrorMessage(err))
     } finally {
       await toolActivity.flush()
       client.off("activity", toolActivity.handleActivity)
